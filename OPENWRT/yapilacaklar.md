@@ -1,5 +1,3 @@
-Tabii, OpenWrt'nin MERCUSYS MW301R V1 yönlendiricisine kurulumu için adımları daha düzenli ve belirgin hale getirelim:
-
 ### OpenWrt Kurulumu İçin Gerekli Adımlar
 
 #### 1. Ağ Kablosu Bağlantısı
