@@ -6,8 +6,10 @@ ROUTER_SSH_PORT="20001"
 ROUTER_PASSWORD="YOUR_ROUTER_PASSWORD"
 
 # OpenWrt dosyaları
-INITRAMFS_FILE="initramfs-kernel.bin"
-SYSUPGRADE_FILE="sysupgrade.bin"
+INITRAMFS_URL="https://downloads.openwrt.org/releases/23.05.3/targets/mediatek/filogic/openwrt-23.05.3-mediatek-filogic-mercusys_mr90x-v1-initramfs-kernel.bin"
+SYSUPGRADE_URL="https://downloads.openwrt.org/releases/23.05.3/targets/mediatek/filogic/openwrt-23.05.3-mediatek-filogic-mercusys_mr90x-v1-squashfs-sysupgrade.bin"
+INITRAMFS_FILE="openwrt-23.05.3-mediatek-filogic-mercusys_mr90x-v1-initramfs-kernel.bin"
+SYSUPGRADE_FILE="openwrt-23.05.3-mediatek-filogic-mercusys_mr90x-v1-squashfs-sysupgrade.bin"
 BUSYBOX_URL="http://mirror.archlinuxarm.org/aarch64/extra/busybox-1.36.1-2-aarch64.pkg.tar.xz"
 BUSYBOX_FILE="busybox-1.36.1-2-aarch64.pkg.tar.xz"
 BUSYBOX_BIN="usr/bin/busybox"
@@ -29,6 +31,10 @@ fi
 ssh_command "echo 'telnetd -l /bin/login.sh' >> /etc/hotplug.d/iface/65-iptv"
 ssh_command "uci set network.lan.iptv='1' && uci commit network && /etc/init.d/network reload"
 
+# initramfs-kernel.bin ve sysupgrade.bin dosyalarını indirme
+wget "$INITRAMFS_URL" -O "$INITRAMFS_FILE"
+wget "$SYSUPGRADE_URL" -O "$SYSUPGRADE_FILE"
+
 # initramfs-kernel.bin dosyasını yükleme
 cat "$INITRAMFS_FILE" | ssh -p "$ROUTER_SSH_PORT" root@"$ROUTER_IP" "cat > /tmp/$INITRAMFS_FILE"
 
@@ -41,6 +47,11 @@ cat "$BUSYBOX_BIN" | ssh -p "$ROUTER_SSH_PORT" root@"$ROUTER_IP" "cat > /tmp/bus
 
 # busybox'ı çalıştırılabilir yapma
 ssh_command "cd /tmp && chmod a+x busybox"
+
+# Yedekleme işlemi
+echo "Yedekleme işlemi başlatılıyor..."
+ssh_command "tar czf /tmp/backup.tar.gz /etc /overlay /root /usr"
+scp -P "$ROUTER_SSH_PORT" root@"$ROUTER_IP":/tmp/backup.tar.gz .
 
 # initramfs-kernel.bin boyutunu kontrol etme ve yeni birim oluşturma
 initramfs_size=$(ssh_command "du -h /tmp/$INITRAMFS_FILE | awk '{print $1}'")
