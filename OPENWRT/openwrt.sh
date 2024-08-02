@@ -8,6 +8,9 @@ ROUTER_PASSWORD="YOUR_ROUTER_PASSWORD"
 # OpenWrt dosyaları
 INITRAMFS_FILE="initramfs-kernel.bin"
 SYSUPGRADE_FILE="sysupgrade.bin"
+BUSYBOX_URL="http://mirror.archlinuxarm.org/aarch64/extra/busybox-1.36.1-2-aarch64.pkg.tar.xz"
+BUSYBOX_FILE="busybox-1.36.1-2-aarch64.pkg.tar.xz"
+BUSYBOX_BIN="usr/bin/busybox"
 
 # SSH bağlantısı
 ssh_command() {
@@ -29,8 +32,15 @@ ssh_command "uci set network.lan.iptv='1' && uci commit network && /etc/init.d/n
 # initramfs-kernel.bin dosyasını yükleme
 cat "$INITRAMFS_FILE" | ssh -p "$ROUTER_SSH_PORT" root@"$ROUTER_IP" "cat > /tmp/$INITRAMFS_FILE"
 
-# busybox yükleme
-ssh_command "opkg update && opkg install busybox"
+# busybox'ı indirme ve çıkartma
+wget "$BUSYBOX_URL"
+tar xvf "$BUSYBOX_FILE"
+
+# busybox'ı yönlendiriciye gönderme
+cat "$BUSYBOX_BIN" | ssh -p "$ROUTER_SSH_PORT" root@"$ROUTER_IP" "cat > /tmp/busybox"
+
+# busybox'ı çalıştırılabilir yapma
+ssh_command "cd /tmp && chmod a+x busybox"
 
 # initramfs-kernel.bin boyutunu kontrol etme ve yeni birim oluşturma
 initramfs_size=$(ssh_command "du -h /tmp/$INITRAMFS_FILE | awk '{print $1}'")
@@ -38,7 +48,7 @@ ubi_size=$(echo "$initramfs_size" | sed 's/[^0-9]*//')
 ssh_command "ubirmvol /dev/ubi0 -N kernel && ubimkvol /dev/ubi0 -n 1 -N kernel -s $((ubi_size + 1))MiB"
 
 # OpenWrt initramfs yazma ve yeniden başlatma
-ssh_command "./usr/bin/busybox ubiupdatevol /dev/ubi0_1 /tmp/$INITRAMFS_FILE && reboot"
+ssh_command "./tmp/busybox ubiupdatevol /dev/ubi0_1 /tmp/$INITRAMFS_FILE && reboot"
 
 # OpenWrt env değişkenlerini ayarlama (SSH bağlantısı için biraz bekleme)
 sleep 30
