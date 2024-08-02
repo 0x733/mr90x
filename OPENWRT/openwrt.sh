@@ -48,11 +48,6 @@ cat "$BUSYBOX_BIN" | ssh -p "$ROUTER_SSH_PORT" root@"$ROUTER_IP" "cat > /tmp/bus
 # busybox'ı çalıştırılabilir yapma
 ssh_command "cd /tmp && chmod a+x busybox"
 
-# Yedekleme işlemi
-echo "Yedekleme işlemi başlatılıyor..."
-ssh_command "tar czf /tmp/backup.tar.gz /etc /overlay /root /usr"
-scp -P "$ROUTER_SSH_PORT" root@"$ROUTER_IP":/tmp/backup.tar.gz .
-
 # initramfs-kernel.bin boyutunu kontrol etme ve yeni birim oluşturma
 initramfs_size=$(ssh_command "du -h /tmp/$INITRAMFS_FILE | awk '{print $1}'")
 ubi_size=$(echo "$initramfs_size" | sed 's/[^0-9]*//')
