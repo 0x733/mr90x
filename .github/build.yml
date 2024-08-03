@@ -62,6 +62,37 @@ jobs:
         branch: [openwrt-21.02, openwrt-22.03, openwrt-23.05]
         arch:
           - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_generic
+          - arm_arm1176jzf-s_vfp
+          - arm_arm926ej-s
+          - arm_cortex-a15_neon-vfpv4
+          - arm_cortex-a5_vfpv4
+          - arm_cortex-a7
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a7_vfpv4
+          - arm_cortex-a8_vfpv3
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - arm_cortex-a9_vfpv3-d16
+          - arm_fa526
+          - arm_mpcore
+          - arm_xscale
+          - mips64_octeonplus
+          - mips_24kc
+          - mips_4kec
+          - mips_mips32
+          - mipsel_24kc
+          - mipsel_24kc_24kf
+          - mipsel_74kc
+          - mipsel_mips32
+          - x86_64
+        include:
+          - branch: SNAPSHOT
+            arch: x86_64
+        exclude:
+          - branch: openwrt-21.02
+            arch: arm_cortex-a7_vfpv4
     container:
       image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
       options: --user root
@@ -105,7 +136,7 @@ jobs:
           make defconfig
           make package/{ip2net,nfqws,mdig,tpws}/compile V=s -j$(nproc) CONFIG_CCACHE=1 BUILD_LOG=1
           ./staging_dir/host/bin/ccache --dir .ccache --max-size=10M --show-stats
-          find ./bin/packages//base -type f ! -regex ".\(ip2net\|nfqws\|mdig\|tpws\).*\.ipk$" -delete
+          find ./bin/packages/*/base -type f ! -regex ".*\(ip2net\|nfqws\|mdig\|tpws\).*\.ipk$" -delete
           echo "$SIGN_KEY" | base64 -d > key-build
           make package/index
           tar -C ./bin/packages/*/base -cvf ipk-$BRANCH-$ARCH.tar --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
@@ -184,6 +215,19 @@ jobs:
           DATE: ${{ needs.check.outputs.date }}
         run: |
           mkdir -p public
-          find . -name "ipk-openwrt-$BRANCH-.tar" -exec tar -xvf {} --wildcards '.ipk' \;
+          find . -name "ipk-openwrt-$BRANCH-*.tar" -exec tar -xvf {} --wildcards '*.ipk' \;
           find $BRANCH -mindepth 1 -type d -exec sh -c 'zip -0 ./public/zapret_${DATE}_$(basename {}).ipk.zip -j {} {}/*' \;
           ls -lh ./public/*.zip
+
+      - name: Upload assets
+        if: steps.zip.outcome == 'success'
+        uses: andelf/nightly-release@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          prerelease: false
+          tag_name: ${{ matrix.branch }}
+          name: '${{ needs.check.outputs.date }} for OpenWrt ${{ matrix.branch }}'
+          body: |
+            ${{ needs.check.outputs.url }}: ${{ needs.check.outputs.message }}
+          files: ./public/*.zip
