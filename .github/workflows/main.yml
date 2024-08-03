@@ -1,0 +1,189 @@
+name: build
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *' # Run nightly
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      date: ${{ steps.gh.outputs.date }}
+      sha: ${{ steps.gh.outputs.sha }}
+      url: ${{ steps.gh.outputs.url }}
+      message: ${{ steps.gh.outputs.message }}
+      is_active: ${{ steps.activity.outputs.is_active }}
+    steps:
+      - name: Get repo data via GH API
+        id: gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: 'bol-van/zapret'
+        run: |
+          BRANCH=$(gh api repos/$REPO --jq '.default_branch')
+          DATE=$(gh api repos/$REPO/commits/$BRANCH --jq '.commit.committer.date')
+          {
+            echo "date=$(date --utc -d $DATE +%Y%m%d)"
+            echo "sha=$(gh api repos/$REPO/commits/$BRANCH --jq '.sha[0:7]')"
+            echo "url=$(gh api repos/$REPO/commits/$BRANCH --jq '.html_url')"
+            echo "message<<EOF"
+            gh api repos/$REPO/commits/$BRANCH --jq '.commit.message'
+            echo EOF
+          } >> $GITHUB_OUTPUT
+          echo "DATE=$DATE" >> $GITHUB_ENV
+
+      - name: Check for repo activity
+        id: activity
+        env:
+          DATE: ${{ env.DATE }}
+          URL: ${{ steps.gh.outputs.url }}
+        run: |
+          TIMESTAMP=$(date --utc -d $DATE +%s)
+          DAYS=$(( ( $(date --utc +%s) - $TIMESTAMP ) / 86400 ))
+          echo "Repository activity: $(date --utc -d $DATE)"
+          echo "Commit: $URL"
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            is_active=true
+          elif [[ $DAYS -lt 1 ]] ; then
+            is_active=true
+          else
+            echo "Repository not updated within last 24 hours."
+            is_active=false
+          fi
+          echo "is_active=$is_active" >> $GITHUB_OUTPUT
+
+  build:
+    needs: check
+    if: needs.check.outputs.is_active == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        branch: [openwrt-21.02, openwrt-22.03, openwrt-23.05]
+        arch:
+          - aarch64_cortex-a53
+    container:
+      image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
+      options: --user root
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: 'bol-van/zapret'
+          path: zapret
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: /builder/.ccache
+          key: ccache-${{ matrix.arch }}-${{ matrix.branch }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ matrix.arch }}-${{ matrix.branch }}-
+
+      - name: Build packages
+        id: build
+        working-directory: /builder
+        shell: bash
+        env:
+          DATE: ${{ needs.check.outputs.date }}
+          SHA: ${{ needs.check.outputs.sha }}
+          ARCH: ${{ matrix.arch }}
+          BRANCH: ${{ matrix.branch }}
+          SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
+        run: |
+          export PKG_VERSION=$(date --utc -d $DATE +%Y%m%d)
+          find ${GITHUB_WORKSPACE}/zapret -type d -path '*/package/zapret' -exec cp -r {} ./package \;
+          cp -r ${GITHUB_WORKSPACE}/zapret/tpws ./package/zapret/tpws/
+          cp -r ${GITHUB_WORKSPACE}/zapret/nfq ./package/zapret/nfqws/
+          cp -r ${GITHUB_WORKSPACE}/zapret/mdig ./package/zapret/mdig/
+          cp -r ${GITHUB_WORKSPACE}/zapret/ip2net ./package/zapret/ip2net/
+          find ./package/zapret -type f -name Makefile -exec sed 's/PKG_RELEASE.*//g' -i {} \;
+          sed -e 's|base.*\.git|base https://github.com/openwrt/openwrt.git|' \
+              -e 's|packages.*\.git|packages https://github.com/openwrt/packages.git|' -i feeds.conf.default
+          ./scripts/feeds update base packages
+          ./scripts/feeds install -a
+          make defconfig
+          make package/{ip2net,nfqws,mdig,tpws}/compile V=s -j$(nproc) CONFIG_CCACHE=1 BUILD_LOG=1
+          ./staging_dir/host/bin/ccache --dir .ccache --max-size=10M --show-stats
+          find ./bin/packages//base -type f ! -regex ".\(ip2net\|nfqws\|mdig\|tpws\).*\.ipk$" -delete
+          echo "$SIGN_KEY" | base64 -d > key-build
+          make package/index
+          tar -C ./bin/packages/*/base -cvf ipk-$BRANCH-$ARCH.tar --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
+
+      - name: Compress build logs
+        if: always()
+        env:
+          ARCH: ${{ matrix.arch }}
+          BRANCH: ${{ matrix.branch }}
+        run: |
+          tar -cJvf logs-$BRANCH-$ARCH.tar.xz /builder/logs
+
+      - name: Upload packages
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipk-${{ matrix.branch }}-${{ matrix.arch }}
+          path: /builder/ipk-${{ matrix.branch }}-${{ matrix.arch }}.tar
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.branch }}-${{ matrix.arch }}
+          path: ./**/logs-${{ matrix.branch }}-${{ matrix.arch }}.tar.xz
+
+  gh-pages:
+    needs: [check, build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ipk-*
+
+      - name: Prepare files
+        run: |
+          mkdir public
+          find . -name 'ipk-*.tar' -exec tar -C ./public -xvf {} \;
+
+      - name: Deploy to GH pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          full_commit_message: ${{ needs.check.outputs.url }}
+          force_orphan: true
+
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        continue-on-error: true
+
+  release:
+    needs: [check, gh-pages]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        branch: ['21.02', '22.03', '23.05']
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ipk-*
+
+      - name: Prepare files
+        id: zip
+        env:
+          BRANCH: ${{ matrix.branch }}
+          DATE: ${{ needs.check.outputs.date }}
+        run: |
+          mkdir -p public
+          find . -name "ipk-openwrt-$BRANCH-.tar" -exec tar -xvf {} --wildcards '.ipk' \;
+          find $BRANCH -mindepth 1 -type d -exec sh -c 'zip -0 ./public/zapret_${DATE}_$(basename {}).ipk.zip -j {} {}/*' \;
+          ls -lh ./public/*.zip
